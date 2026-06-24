@@ -54,9 +54,9 @@ def divider(title=""):
     w = 58
     if title:
         side = (w - len(title) - 2) // 2
-        print(f"{DM}{\'─\' * side} {BD}{title}{R}{DM} {\'─\' * side}{R}")
+        print(f"{DM}{'─' * side} {BD}{title}{R}{DM} {'─' * side}{R}")
     else:
-        print(f"{DM}{\'─\' * w}{R}")
+        print(f"{DM}{'─' * w}{R}")
 
 def status(msg, kind="info"):
     icons = {"info": f"{BL}ℹ", "ok": f"{GR}✔", "warn": f"{YL}⚠", "err": f"{RD}✖", "run": f"{CY}►"}
@@ -88,11 +88,11 @@ def countdown(seconds):
     bar_w = 40
     for remaining in range(seconds, 0, -1):
         filled = int((seconds - remaining) / seconds * bar_w)
-        bar = f"{GR}{\'█\' * filled}{DM}{\'░\' * (bar_w - filled)}{R}"
+        bar = f"{GR}{'█' * filled}{DM}{'░' * (bar_w - filled)}{R}"
         mins, secs = divmod(remaining, 60)
         print(f"\r  {bar} {YL}{mins:02d}:{secs:02d}{R}", end="", flush=True)
         time.sleep(1)
-    print(f"\r  {GR}{\'█\' * bar_w}{R} {GR}Done!{R}          ")
+    print(f"\r  {GR}{'█' * bar_w}{R} {GR}Done!{R}          ")
 
 # ── Playwright-based Auth ──────────────────────────────
 class TikTokAuthPlaywright:
@@ -329,7 +329,7 @@ class UploadQueue:
             print()
             divider(f"Video {idx}/{total}")
             status(f"Uploading: {name}", "run")
-            status(f"Title: {vid[\'title\'][:60]}...", "info")
+            status(f"Title: {vid['title'][:60]}...", "info")
 
             ok, msg = await self.uploader.upload(
                 self.page, vid["path"], vid["title"], vid["desc"], vid["tags"]
