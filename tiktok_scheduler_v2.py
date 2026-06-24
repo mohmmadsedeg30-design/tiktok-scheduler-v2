@@ -3,7 +3,7 @@
 """
 ╔══════════════════════════════════════════════════════╗
 ║         TIKTOK SCHEDULER ENGINE  v2.0               ║
-║         Playwright Automation Edition                ║
+║         Selenium Automation Edition (Termux)         ║
 ╚══════════════════════════════════════════════════════╝
 """
 
@@ -12,10 +12,17 @@ import sys
 import json
 import time
 import glob
-import asyncio
 from datetime import datetime
 from pathlib import Path
-from playwright.async_api import async_playwright
+
+# Selenium Imports
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
 # ── Color codes ──────────────────────────────────────
 R  = "\033[0m"
@@ -46,7 +53,7 @@ def banner():
 ║       ╚═╝   ╚═╝╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝      ║
 ║                                                          ║
 ║          S C H E D U L E R   E N G I N E               ║
-║                    v2.0  •  Playwright Automation       ║
+║                    v2.0  •  Selenium Automation         ║
 ╚══════════════════════════════════════════════════════════╝{R}
 """)
 
@@ -84,7 +91,6 @@ def prompt(text, default=None, hide_input=False):
     return val if val else default
 
 def countdown(seconds):
-    """Visual countdown bar"""
     bar_w = 40
     for remaining in range(seconds, 0, -1):
         filled = int((seconds - remaining) / seconds * bar_w)
@@ -94,187 +100,143 @@ def countdown(seconds):
         time.sleep(1)
     print(f"\r  {GR}{'█' * bar_w}{R} {GR}Done!{R}          ")
 
-# ── Playwright-based Auth ──────────────────────────────
-class TikTokAuthPlaywright:
-    def __init__(self, cfg):
-        self.cfg = cfg
+# ── Browser Engine ─────────────────────────────────────
+def get_browser():
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36")
+    
+    # Termux Specific Path
+    termux_bin = "/data/data/com.termux/files/usr/bin/chromium-browser"
+    if os.path.exists(termux_bin):
+        chrome_options.binary_location = termux_bin
+    
+    try:
+        # On Termux, chromedriver is usually in the path if installed via pkg
+        service = Service() 
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        return driver
+    except Exception as e:
+        status(f"Browser launch failed: {e}", "err")
+        return None
 
-    async def is_logged_in(self, page):
+# ── TikTok Automation Logic ────────────────────────────
+class TikTokAutomation:
+    def __init__(self, driver, cfg):
+        self.driver = driver
+        self.cfg = cfg
+        self.wait = WebDriverWait(self.driver, 20)
+
+    def is_logged_in(self):
         try:
-            await page.goto("https://www.tiktok.com/", timeout=60000)
-            await page.wait_for_load_state("networkidle")
-            return await page.is_visible("button[data-e2e=\"upload-btn\"]") or \
-                   await page.is_visible("a[href=\"/upload\"]")
+            self.driver.get("https://www.tiktok.com/")
+            time.sleep(5)
+            # Check for upload button or profile icon
+            return len(self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/upload']")) > 0 or \
+                   len(self.driver.find_elements(By.CSS_SELECTOR, "div[data-e2e='profile-icon']")) > 0
         except:
             return False
 
-    async def login(self, page):
-        cls(); banner()
-        divider("LOGIN — Playwright Automation")
-        print()
-
-        username = self.cfg.get("tiktok_username") or prompt("TikTok Username")
-        password = self.cfg.get("tiktok_password") or prompt("TikTok Password", hide_input=True)
-
-        if not username or not password:
-            status("TikTok username and password are required.", "err")
-            return False
-
-        self.cfg["tiktok_username"] = username
-        self.cfg["tiktok_password"] = password
-        save_config(self.cfg)
-
-        status("Navigating to TikTok login page...", "run")
-        await page.goto("https://www.tiktok.com/login")
+    def login(self):
+        cls(); banner(); divider("LOGIN")
+        user = self.cfg.get("tiktok_username") or prompt("Username/Email")
+        pwd  = self.cfg.get("tiktok_password") or prompt("Password", hide_input=True)
+        
+        self.driver.get("https://www.tiktok.com/login/phone-or-email/email")
+        time.sleep(3)
         
         try:
-            if await page.is_visible("text=Use phone / email / username"):
-                await page.click("text=Use phone / email / username")
+            self.driver.find_element(By.NAME, "username").send_keys(user)
+            self.driver.find_element(By.CSS_SELECTOR, "input[type='password']").send_keys(pwd)
+            self.driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
             
-            await page.fill("input[name=\"username\"]", username, timeout=5000)
-            await page.fill("input[name=\"password\"]", password)
-            await page.click("button[type=\"submit\"]")
+            status("Waiting for login... Solve Captcha if it appears!", "run")
+            time.sleep(15) # Wait for manual captcha/redirect
+            
+            if "foryou" in self.driver.current_url or self.is_logged_in():
+                status("Login Successful!", "ok")
+                self.cfg["tiktok_username"], self.cfg["tiktok_password"] = user, pwd
+                save_config(self.cfg)
+                return True
+            else:
+                status("Login failed or Captcha required.", "err")
+                return False
+        except Exception as e:
+            status(f"Login Error: {e}", "err")
+            return False
 
-            status("Waiting for login to complete (Check for Captcha on screen)...", "run")
-            await page.wait_for_url("https://www.tiktok.com/foryou", timeout=60000)
-            status("Login successful!", "ok")
+    def upload(self, filepath, title, desc, tags):
+        status(f"Uploading: {Path(filepath).name}", "run")
+        try:
+            self.driver.get("https://www.tiktok.com/upload?lang=en")
+            time.sleep(5)
+            
+            # Switch to iframe if necessary (TikTok upload is often in one)
+            if len(self.driver.find_elements(By.TAG_NAME, "iframe")) > 0:
+                self.driver.switch_to.frame(0)
+            
+            file_input = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='file']")))
+            file_input.send_keys(os.path.abspath(filepath))
+            
+            status("Processing video...", "info")
+            time.sleep(10)
+            
+            caption_box = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[aria-label='Caption']")))
+            caption_box.clear()
+            caption_box.send_keys(f"{title}\n{desc}\n{tags}")
+            
+            post_btn = self.wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-e2e='post-button']")))
+            post_btn.click()
+            
+            status("Video Posted!", "ok")
+            time.sleep(5)
             return True
         except Exception as e:
-            status(f"Login timed out or failed: {e}", "err")
-            status("If you see a Captcha, please solve it in the browser.", "warn")
+            status(f"Upload Error: {e}", "err")
             return False
 
-    def logout(self):
-        for key in ("tiktok_username", "tiktok_password"):
-            self.cfg.pop(key, None)
-        save_config(self.cfg)
-        status("Logged out.", "ok")
-
-# ── AI Content Generator ──────────────────────────────
-class ContentGenerator:
-    TAGS = ["#fyp", "#foryou", "#viral", "#trending", "#explore"]
-    def generate(self, filename):
-        base = Path(filename).stem.replace("_", " ").replace("-", " ").title()
-        title = base[:90]
-        desc  = f"{base} — Watch till the end! 🔥"
-        tags  = " ".join(self.TAGS)
-        return title, desc, tags
-
-# ── Playwright-based Uploader ──────────────────────────
-class TikTokUploaderPlaywright:
-    def __init__(self, cfg):
-        self.cfg = cfg
-
-    async def upload(self, page, filepath, title, desc, tags):
-        status(f"Navigating to upload page...", "run")
-        await page.goto("https://www.tiktok.com/upload?lang=en")
-        
-        try:
-            upload_box = await page.wait_for_selector("div[data-e2e=\"upload-box\"]", timeout=15000)
-            file_input = await upload_box.locator("input[type=\"file\"]")
-            await file_input.set_input_files(filepath)
-            status("File uploaded to browser.", "info")
-
-            await page.wait_for_selector("[aria-label=\"Caption\"]", timeout=60000)
-            caption_text = f"{title}\n{desc}\n{tags}"
-            await page.fill("[aria-label=\"Caption\"]", caption_text)
-            
-            await page.click("button[data-e2e=\"post-button\"]")
-            status("Post button clicked. Waiting for confirmation...", "run")
-            
-            await page.wait_for_url(lambda url: "/video/" in url or "/user/" in url, timeout=120000)
-            status("Video uploaded successfully!", "ok")
-            return True, "Success"
-        except Exception as e:
-            status(f"Upload failed: {e}", "err")
-            return False, str(e)
-
-# ── Queue Manager ─────────────────────────────────────
-class UploadQueue:
-    def __init__(self, cfg, page):
-        self.cfg, self.page = cfg, page
-        self.uploader = TikTokUploaderPlaywright(cfg)
-        self.videos, self.interval = [], 1800
-        self.stopped = False
-
-    def build_queue(self):
-        cls(); banner(); divider("SELECT VIDEO FOLDER")
-        folder = prompt("Folder path", os.path.expanduser("~/Videos"))
-        if not os.path.isdir(folder): return False
-        
-        files = []
-        for e in ["*.mp4","*.mov","*.avi"]:
-            files.extend(glob.glob(os.path.join(folder, e)))
-        
-        if not files: return False
-        
-        self.videos = [{"path": f, "status": "pending"} for f in sorted(files)]
-        gen = ContentGenerator()
-        for v in self.videos:
-            v["title"], v["desc"], v["tags"] = gen.generate(v["path"])
-            
-        return True
-
-    async def run(self):
-        total = len(self.videos)
-        for idx, vid in enumerate(self.videos, 1):
-            if self.stopped: break
-            divider(f"Video {idx}/{total}")
-            name = Path(vid["path"]).name
-            status(f"Uploading: {name}", "run")
-            
-            ok, msg = await self.uploader.upload(self.page, vid["path"], vid["title"], vid["desc"], vid["tags"])
-            vid["status"] = "done" if ok else "failed"
-            
-            if idx < total:
-                status(f"Waiting {self.interval//60} min...", "info")
-                countdown(self.interval)
-
-# ── Main ──────────────────────────────────────────────
-async def main():
+# ── Main Loop ──────────────────────────────────────────
+def main():
     cfg = load_config()
-    pw = await async_playwright().start()
-    
-    # Termux Compatibility: Check for system chromium
-    termux_chromium = "/data/data/com.termux/files/usr/bin/chromium-browser"
-    launch_args = {"headless": True, "args": ["--no-sandbox", "--disable-gpu"]}
-    
-    if os.path.exists(termux_chromium):
-        launch_args["executable_path"] = termux_chromium
-        status("Termux Chromium detected, using system browser.", "ok")
-    
-    try:
-        browser = await pw.chromium.launch(**launch_args)
-    except Exception as e:
-        status(f"Failed to launch browser: {e}", "err")
-        status("Try: pkg install x11-repo chromium", "warn")
+    driver = get_browser()
+    if not driver:
+        print(f"\n{RD}CRITICAL: Could not start browser. Ensure 'chromium' and 'tur-repo' are installed.{R}")
         return
 
-    context = await browser.new_context()
-    page = await context.new_page()
-    auth, queue = TikTokAuthPlaywright(cfg), None
-
+    bot = TikTokAutomation(driver, cfg)
+    
     while True:
         cls(); banner()
-        logged = await auth.is_logged_in(page)
+        logged = bot.is_logged_in()
         divider("MAIN MENU")
         print(f"  {'[● Logged In]' if logged else '[○ Not Logged In]'}\n")
-        print(f"  {CY}[1]{R} Login  {CY}[2]{R} Logout\n  {GR}[3]{R} Build Queue  {GR}[4]{R} Start\n  {RD}[Q]{R} Quit")
+        print(f"  {CY}[1]{R} Login  {CY}[2]{R} Logout\n  {GR}[3]{R} Start Upload Queue\n  {RD}[Q]{R} Quit")
         divider()
         
         ch = input(f"  {YL}>{R} Choice: ").strip().lower()
-        if ch == "1": await auth.login(page)
-        elif ch == "2": auth.logout()
+        if ch == "1": bot.login()
+        elif ch == "2": 
+            cfg.clear(); save_config(cfg); status("Logged out.", "ok"); time.sleep(2)
         elif ch == "3":
-            queue = UploadQueue(cfg, page)
-            if not queue.build_queue(): status("No videos found.", "warn")
-        elif ch == "4":
-            if queue: await queue.run()
-            else: status("Build queue first.", "warn")
-        elif ch == "q": break
+            if not logged:
+                status("Please login first!", "warn"); time.sleep(2); continue
+            
+            folder = prompt("Folder Path", os.path.expanduser("~/Videos"))
+            files = glob.glob(os.path.join(folder, "*.mp4"))
+            if not files:
+                status("No videos found.", "err"); time.sleep(2); continue
+            
+            for f in sorted(files):
+                bot.upload(f, Path(f).stem, "Automated Upload", "#fyp #viral")
+                status("Waiting 30 min...", "info")
+                countdown(1800)
+        elif ch == "q":
+            break
 
-    await browser.close()
-    await pw.stop()
+    driver.quit()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
