@@ -15,7 +15,7 @@ import glob
 import asyncio
 from datetime import datetime
 from pathlib import Path
-from playwright.async_api import Playwright, async_playwright, expect
+from playwright.async_api import async_playwright
 
 # ── Color codes ──────────────────────────────────────
 R  = "\033[0m"
@@ -100,14 +100,13 @@ class TikTokAuthPlaywright:
         self.cfg = cfg
 
     async def is_logged_in(self, page):
-        # Check if already logged in by looking for a specific element
-        await page.goto("https://www.tiktok.com/")
-        await page.wait_for_load_state("networkidle")
-        # Check for elements that are only visible when logged in
-        # This might need to be adjusted based on TikTok's UI changes
-        return await page.is_visible("div[data-e2e=\"feed-video-card\"]") or \
-               await page.is_visible("button[data-e2e=\"upload-btn\"]") or \
-               await page.is_visible("a[href=\"/upload\"]")
+        try:
+            await page.goto("https://www.tiktok.com/", timeout=60000)
+            await page.wait_for_load_state("networkidle")
+            return await page.is_visible("button[data-e2e=\"upload-btn\"]") or \
+                   await page.is_visible("a[href=\"/upload\"]")
+        except:
+            return False
 
     async def login(self, page):
         cls(); banner()
@@ -115,49 +114,34 @@ class TikTokAuthPlaywright:
         print()
 
         username = self.cfg.get("tiktok_username") or prompt("TikTok Username")
-        password = self.cfg.get("tiktok_password") or prompt("TikTok Password", hide_input=True) # hide_input not supported by default prompt
+        password = self.cfg.get("tiktok_password") or prompt("TikTok Password", hide_input=True)
 
         if not username or not password:
             status("TikTok username and password are required.", "err")
             return False
 
         self.cfg["tiktok_username"] = username
-        self.cfg["tiktok_password"] = password # In a real app, this should be encrypted
+        self.cfg["tiktok_password"] = password
         save_config(self.cfg)
 
         status("Navigating to TikTok login page...", "run")
         await page.goto("https://www.tiktok.com/login")
-        await page.wait_for_load_state("networkidle")
-
-        # Click 'Use phone / email / username' if present
-        if await page.is_visible("text=Use phone / email / username"): # Check if the option is visible
-            await page.click("text=Use phone / email / username")
-            await page.wait_for_load_state("networkidle")
-
-        # Fill in credentials
-        # TikTok uses different selectors for username/email/phone input
-        # We'll try to find a common input field or specific ones
+        
         try:
+            if await page.is_visible("text=Use phone / email / username"):
+                await page.click("text=Use phone / email / username")
+            
             await page.fill("input[name=\"username\"]", username, timeout=5000)
-        except:
-            try:
-                await page.fill("input[name=\"email\"]", username, timeout=5000)
-            except:
-                await page.fill("input[name=\"phone\"]", username, timeout=5000)
+            await page.fill("input[name=\"password\"]", password)
+            await page.click("button[type=\"submit\"]")
 
-        await page.fill("input[name=\"password\"]", password)
-
-        # Click the login button
-        await page.click("button[type=\"submit\"]")
-
-        status("Waiting for login to complete...", "run")
-        try:
-            await page.wait_for_url("https://www.tiktok.com/foryou", timeout=30000) # Wait for redirect to For You page
+            status("Waiting for login to complete (Check for Captcha on screen)...", "run")
+            await page.wait_for_url("https://www.tiktok.com/foryou", timeout=60000)
             status("Login successful!", "ok")
             return True
         except Exception as e:
-            status(f"Login failed: {e}", "err")
-            # Add more robust error checking here, e.g., check for error messages on page
+            status(f"Login timed out or failed: {e}", "err")
+            status("If you see a Captcha, please solve it in the browser.", "warn")
             return False
 
     def logout(self):
@@ -168,19 +152,12 @@ class TikTokAuthPlaywright:
 
 # ── AI Content Generator ──────────────────────────────
 class ContentGenerator:
-    """Generates title, description, hashtags using simple heuristics
-       (replace with real AI API call if desired)."""
-
-    TAGS = [
-        "#fyp", "#foryou", "#viral", "#trending", "#explore",
-        "#video", "#content", "#creator", "#tiktok", "#reels",
-    ]
-
+    TAGS = ["#fyp", "#foryou", "#viral", "#trending", "#explore"]
     def generate(self, filename):
         base = Path(filename).stem.replace("_", " ").replace("-", " ").title()
         title = base[:90]
         desc  = f"{base} — Watch till the end! 🔥"
-        tags  = " ".join(self.TAGS[:7])
+        tags  = " ".join(self.TAGS)
         return title, desc, tags
 
 # ── Playwright-based Uploader ──────────────────────────
@@ -189,49 +166,25 @@ class TikTokUploaderPlaywright:
         self.cfg = cfg
 
     async def upload(self, page, filepath, title, desc, tags):
-        status(f"Navigating to upload page for {Path(filepath).name}...", "run")
-        await page.goto("https://www.tiktok.com/upload?lang=en") # Use English version for consistent selectors
-        await page.wait_for_load_state("networkidle")
-
-        # Check if login is required again
-        if not await TikTokAuthPlaywright(self.cfg).is_logged_in(page):
-            status("Not logged in, attempting to log in before upload.", "warn")
-            if not await TikTokAuthPlaywright(self.cfg).login(page):
-                return False, "Failed to log in for upload."
-            await page.goto("https://www.tiktok.com/upload?lang=en") # Go back to upload page after login
-            await page.wait_for_load_state("networkidle")
-
+        status(f"Navigating to upload page...", "run")
+        await page.goto("https://www.tiktok.com/upload?lang=en")
+        
         try:
-            # Upload video file
-            # Wait for the upload input element to be visible
             upload_box = await page.wait_for_selector("div[data-e2e=\"upload-box\"]", timeout=15000)
             file_input = await upload_box.locator("input[type=\"file\"]")
             await file_input.set_input_files(filepath)
-            status(f"Uploaded file: {Path(filepath).name}", "info")
+            status("File uploaded to browser.", "info")
 
-            # Wait for processing to complete and caption field to appear
             await page.wait_for_selector("[aria-label=\"Caption\"]", timeout=60000)
-
-            # Fill in caption/description
             caption_text = f"{title}\n{desc}\n{tags}"
             await page.fill("[aria-label=\"Caption\"]", caption_text)
-            status("Filled caption.", "info")
-
-            # Set privacy to 'Public' (or other desired setting)
-            # This might require clicking a dropdown and selecting an option
-            # For now, we'll assume the default is fine or handle it later if needed
-            # await page.click("div[aria-label=\"Who can watch this video\"]")
-            # await page.click("text=Public")
-
-            # Click the \'Post\' button
+            
             await page.click("button[data-e2e=\"post-button\"]")
-
-            status("Waiting for upload to complete...", "run")
-            # Wait for a success indicator or redirection to profile page
-            await page.wait_for_url(lambda url: "/video/" in url or "/user/" in url, timeout=120000) # Wait for video URL or user profile
-            status("Video uploaded successfully (or redirected to profile)!", "ok")
-            return True, "Upload successful via Playwright"
-
+            status("Post button clicked. Waiting for confirmation...", "run")
+            
+            await page.wait_for_url(lambda url: "/video/" in url or "/user/" in url, timeout=120000)
+            status("Video uploaded successfully!", "ok")
+            return True, "Success"
         except Exception as e:
             status(f"Upload failed: {e}", "err")
             return False, str(e)
@@ -239,208 +192,89 @@ class TikTokUploaderPlaywright:
 # ── Queue Manager ─────────────────────────────────────
 class UploadQueue:
     def __init__(self, cfg, page):
-        self.cfg       = cfg
-        self.page      = page
-        self.gen       = ContentGenerator()
-        self.uploader  = TikTokUploaderPlaywright(cfg)
-        self.videos    = []
-        self.interval  = 1800   # default 30 min
-        self.paused    = False
-        self.stopped   = False
-
-    def _pick_folder(self):
-        cls(); banner(); divider("SELECT VIDEO FOLDER")
-        print()
-        folder = prompt("Enter folder path containing videos", os.path.expanduser("~/Videos"))
-        folder = os.path.expanduser(folder)
-        if not os.path.isdir(folder):
-            status(f"Folder not found: {folder}", "err")
-            return []
-        exts = ["*.mp4","*.mov","*.avi","*.mkv","*.webm"]
-        files = []
-        for e in exts:
-            files.extend(glob.glob(os.path.join(folder, e)))
-        files.sort()
-        return files
-
-    def _pick_interval(self):
-        cls(); banner(); divider("SCHEDULE SETTINGS")
-        print(f"""
-  {YL}Interval between uploads:{R}
-
-  {BD}[1]{R}  30 minutes
-  {BD}[2]{R}  1 hour
-  {BD}[3]{R}  2 hours
-  {BD}[4]{R}  Custom (seconds)
-""")
-        ch = prompt("Choice", "1")
-        mapping = {"1": 1800, "2": 3600, "3": 7200}
-        if ch in mapping:
-            return mapping[ch]
-        try:
-            return int(prompt("Enter interval in seconds", "1800"))
-        except ValueError:
-            return 1800
+        self.cfg, self.page = cfg, page
+        self.uploader = TikTokUploaderPlaywright(cfg)
+        self.videos, self.interval = [], 1800
+        self.stopped = False
 
     def build_queue(self):
-        files = self._pick_folder()
-        if not files:
-            status("No video files found.", "warn")
-            input("  Press Enter to go back...")
-            return False
-
-        self.interval = self._pick_interval()
-
-        cls(); banner(); divider("QUEUE PREVIEW")
-        print()
+        cls(); banner(); divider("SELECT VIDEO FOLDER")
+        folder = prompt("Folder path", os.path.expanduser("~/Videos"))
+        if not os.path.isdir(folder): return False
+        
+        files = []
+        for e in ["*.mp4","*.mov","*.avi"]:
+            files.extend(glob.glob(os.path.join(folder, e)))
+        
+        if not files: return False
+        
+        self.videos = [{"path": f, "status": "pending"} for f in sorted(files)]
         gen = ContentGenerator()
-        self.videos = []
-        for i, f in enumerate(files[:100], 1):
-            title, desc, tags = gen.generate(f)
-            self.videos.append({"path": f, "title": title, "desc": desc, "tags": tags, "status": "pending"})
-            size_mb = os.path.getsize(f) / 1024 / 1024
-            print(f"  {DM}{i:>3}.{R} {GR}{Path(f).name:<40}{R} {YL}{size_mb:>6.1f} MB{R}")
-
-        print()
-        mins = self.interval // 60
-        status(f"{len(self.videos)} videos • interval: {mins} min • est. finish: {len(self.videos)*mins} min", "info")
-        print()
-        confirm = prompt("Start uploading? (y/n)", "y")
-        return confirm.lower() == "y"
+        for v in self.videos:
+            v["title"], v["desc"], v["tags"] = gen.generate(v["path"])
+            
+        return True
 
     async def run(self):
-        if not self.videos:
-            return
-        cls(); banner(); divider("UPLOADING")
-        print()
-        total   = len(self.videos)
-        success = 0
-        failed  = 0
-
+        total = len(self.videos)
         for idx, vid in enumerate(self.videos, 1):
-            if self.stopped:
-                status("Queue stopped by user.", "warn")
-                break
-
-            while self.paused:
-                await asyncio.sleep(1)
-
-            name = Path(vid["path"]).name
-            print()
+            if self.stopped: break
             divider(f"Video {idx}/{total}")
+            name = Path(vid["path"]).name
             status(f"Uploading: {name}", "run")
-            status(f"Title: {vid['title'][:60]}...", "info")
-
-            ok, msg = await self.uploader.upload(
-                self.page, vid["path"], vid["title"], vid["desc"], vid["tags"]
-            )
-
-            if ok:
-                vid["status"] = "done"
-                success += 1
-                status(f"Success — {msg}", "ok")
-            else:
-                vid["status"] = "failed"
-                failed += 1
-                status(f"Failed: {msg}", "err")
-
-            # Wait between uploads (skip after last)
-            if idx < total and not self.stopped:
-                mins = self.interval // 60
-                print()
-                status(f"Waiting {mins} min before next upload...", "info")
+            
+            ok, msg = await self.uploader.upload(self.page, vid["path"], vid["title"], vid["desc"], vid["tags"])
+            vid["status"] = "done" if ok else "failed"
+            
+            if idx < total:
+                status(f"Waiting {self.interval//60} min...", "info")
                 countdown(self.interval)
 
-        print()
-        divider("SUMMARY")
-        print(f"""
-  {GR}✔  Success : {success}{R}
-  {RD}✖  Failed  : {failed}{R}
-  {BL}►  Total   : {total}{R}
-""")
-        input("  Press Enter to return to menu...")
-
-# ── Main Menu ─────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────
 async def main():
-    cfg  = load_config()
-    playwright_instance = await async_playwright().start()
-    browser = await playwright_instance.chromium.launch(headless=False) # Set headless=True for background operation
+    cfg = load_config()
+    pw = await async_playwright().start()
+    
+    # Termux Compatibility: Check for system chromium
+    termux_chromium = "/data/data/com.termux/files/usr/bin/chromium-browser"
+    launch_args = {"headless": True, "args": ["--no-sandbox", "--disable-gpu"]}
+    
+    if os.path.exists(termux_chromium):
+        launch_args["executable_path"] = termux_chromium
+        status("Termux Chromium detected, using system browser.", "ok")
+    
+    try:
+        browser = await pw.chromium.launch(**launch_args)
+    except Exception as e:
+        status(f"Failed to launch browser: {e}", "err")
+        status("Try: pkg install x11-repo chromium", "warn")
+        return
+
     context = await browser.new_context()
     page = await context.new_page()
-
-    auth = TikTokAuthPlaywright(cfg)
-    queue = None
+    auth, queue = TikTokAuthPlaywright(cfg), None
 
     while True:
         cls(); banner()
-
         logged = await auth.is_logged_in(page)
-        log_status = f"{GR}● Logged In{R}" if logged \
-                     else f"{RD}○ Not Logged In{R}"
-
         divider("MAIN MENU")
-        print(f"""
-  {log_status}
-
-  {BD}{CY}[1]{R}  Login / Re-authenticate
-  {BD}{CY}[2]{R}  Logout
-  {BD}{\'─\' * 40}{R}
-  {BD}{GR}[3]{R}  Build Upload Queue
-  {BD}{GR}[4]{R}  Start Queue
-  {BD}{\'─\' * 40}{R}
-  {BD}{YL}[5]{R}  View Queue Status
-  {BD}{RD}[Q]{R}  Quit
-""")
+        print(f"  {'[● Logged In]' if logged else '[○ Not Logged In]'}\n")
+        print(f"  {CY}[1]{R} Login  {CY}[2]{R} Logout\n  {GR}[3]{R} Build Queue  {GR}[4]{R} Start\n  {RD}[Q]{R} Quit")
         divider()
+        
         ch = input(f"  {YL}>{R} Choice: ").strip().lower()
-
-        if ch == "1":
-            await auth.login(page)
-            input("  Press Enter to continue...")
-
-        elif ch == "2":
-            auth.logout()
-            input("  Press Enter to continue...")
-
+        if ch == "1": await auth.login(page)
+        elif ch == "2": auth.logout()
         elif ch == "3":
-            if not await auth.is_logged_in(page):
-                status("Please login first.", "warn")
-                input("  Press Enter...")
-                continue
             queue = UploadQueue(cfg, page)
-            ok = queue.build_queue()
-            if not ok:
-                queue = None
-
+            if not queue.build_queue(): status("No videos found.", "warn")
         elif ch == "4":
-            if not queue or not queue.videos:
-                status("Build a queue first (option 3).", "warn")
-                input("  Press Enter...")
-                continue
-            queue.stopped = False
-            queue.paused  = False
-            await queue.run()
+            if queue: await queue.run()
+            else: status("Build queue first.", "warn")
+        elif ch == "q": break
 
-        elif ch == "5":
-            cls(); banner(); divider("QUEUE STATUS")
-            print()
-            if not queue or not queue.videos:
-                status("No queue built yet.", "warn")
-            else:
-                for i, v in enumerate(queue.videos, 1):
-                    col = {"pending": YL, "done": GR, "failed": RD}.get(v["status"], R)
-                    print(f"  {DM}{i:>3}.{R} {col}{v[\'status\'] :<8}{R}  {Path(v[\'path\']).name}")
-            print()
-            input("  Press Enter to continue...")
-
-        elif ch == "q":
-            cls()
-            print(f"\n  {CY}TikTok Scheduler Engine — Goodbye!{R}\n")
-            await context.close()
-            await browser.close()
-            await playwright_instance.stop()
-            sys.exit(0)
+    await browser.close()
+    await pw.stop()
 
 if __name__ == "__main__":
-    import sys
-    sys.exit(asyncio.run(main()))
+    asyncio.run(main())
